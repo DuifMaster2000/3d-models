@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+    }
+  }
+</script>
+
+  <title>Procedural 3‑D World — Procedural Grass</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#000}
+    canvas{display:block;cursor:pointer;}
+    #hint{position:fixed;top:8px;left:8px;font-family:sans-serif;font-size:.85rem;color:#fff;background:#0007;padding:4px 6px;border-radius:4px;pointer-events:none}
+    #coords{position:fixed;bottom:8px;left:8px;font-family:monospace;font-size:.8rem;color:#fff;background:#0007;padding:3px 6px;border-radius:4px;pointer-events:none;line-height:1.4;}
+
+    .fullscreen-overlay {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background: #000000a0;
+        color: white;
+        font-family: sans-serif;
+        text-align: center;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        font-size: 3rem;
+        text-shadow: 0 0 10px black;
+    }
+    .fullscreen-overlay button {
+        margin-top: 20px;
+        padding: 10px 20px;
+        font-size: 1.5rem;
+        cursor: pointer;
+        border: 2px solid white;
+        background: #ffffff20;
+        color: white;
+        border-radius: 8px;
+    }
+    
+    #staminaContainer {
+        position: fixed;
+        bottom: 60px;
+        left: 8px;
+        width: 200px;
+        height: 5px;
+        background: #000000a0;
+        border: 1px solid #ffffffa0;
+        border-radius: 4px;
+        padding: 1px;
+    }
+    #staminaBar {
+        width: 100%;
+        height: 100%;
+        background: #ffffff;
+        border-radius: 3px;
+        transition: width 0.1s linear;
+    }
+
+        #crosshair {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 20px;
+        height: 20px;
+        pointer-events: none; /* Allows clicks to pass through to the canvas */
+    }
+
+    #crosshair::before, #crosshair::after {
+        content: '';
+        position: absolute;
+        background-color: white;
+        box-shadow: 0 0 4px black; /* Optional: adds a slight glow/outline */
+    }
+
+    /* Horizontal line */
+    #crosshair::before {
+        left: 0;
+        top: 50%;
+        width: 100%;
+        height: 2px;
+        margin-top: -1px; /* Center the line vertically */
+    }
+
+    /* Vertical line */
+    #crosshair::after {
+        top: 0;
+        left: 50%;
+        height: 100%;
+        width: 2px;
+        margin-left: -1px; /* Center the line horizontally */
+    }
+  </style>
+</head>
+<body>
+  <div id="hint">Click to lock controls · Shift to Sprint · Click monuments</div>
+  <div id="coords"></div>
+  <canvas id="c"></canvas>
+  
+  <div id="staminaContainer">
+    <div id="staminaBar"></div>
+  </div>
+
+  <div id="gameOverScreen" class="fullscreen-overlay">
+      <div>YOU WERE CAUGHT</div>
+      <button id="restartButton">Try Again</button>
+  </div>
+
+  <div id="winScreen" class="fullscreen-overlay">
+      <div>YOU SURVIVED</div>
+      <button id="restartButtonWin">Play Again</button>
+  </div>
+  <div id="crosshair"></div>
+  <script type="module">
+// Use these simple imports now that you have an import map
+import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+    
+    /* ────────── Inline 2‑D Simplex for fine terrain ────────── */
+    class SimplexNoise{constructor(r=Math){const p=Uint8Array.from({length:256},()=>r.random()*256|0);this.p=new Uint8Array(512);for(let i=0;i<512;i++)this.p[i]=p[i&255];}#g(g,x,y){return(g&1?x:-x)+(g&2?y:-y);}noise2D(x,y){const F=.366025403784,G=.211324865405;const s=(x+y)*F;const i=Math.floor(x+s),j=Math.floor(y+s);const t=(i+j)*G;const X0=i-t,Y0=j-t;const x0=x-X0,y0=y-Y0;let i1,j1;x0>y0?(i1=1,j1=0):(i1=0,j1=1);const x1=x0-i1+G,y1=y0-j1+G,x2=x0-1+2*G,y2=y0-1+2*G;const ii=i&255,jj=j&255;const g0=this.p[ii+this.p[jj]]&3,g1=this.p[ii+i1+this.p[jj+j1]]&3,g2=this.p[ii+1+this.p[jj+1]]&3;let n0=0,n1=0,n2=0;let t0=.5-x0*x0-y0*y0;if(t0>0){t0*=t0;n0=t0*t0*this.#g(g0,x0,y0);}let t1=.5-x1*x1-y1*y1;if(t1>0){t1*=t1;n1=t1*t1*this.#g(g1,x1,y1);}let t2=.5-x2*x2-y2*y2;if(t2>0){t2*=t2;n2=t2*t2*this.#g(g2,x2,y2);}return 70*(n0+n1+n2);}};
+    const simplex = new SimplexNoise();
+
+    /* ────────── Terrain helpers ────────── */
+    const SIZE = 800, RES = 400, AMP = 18;
+    const baseHeight = (x, z) =>
+      (Math.sin(x*0.05) + Math.cos(z*0.05)) * 0.5 * AMP +
+      Math.sin(x*0.005) * 8
+    + simplex.noise2D(x*0.02, z*0.02) * 4
+    + simplex.noise2D(x*0.04, z*0.04) * 2;
+    const heightAt   = (x,z) => baseHeight(x,z);
+
+    /* ────────── Scene, renderer, camera ────────── */
+const renderer = new THREE.WebGLRenderer({canvas:document.getElementById('c'),antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+const scene = new THREE.Scene();
+
+// 1. Create the Player object (an Object3D that will be our controller)
+const player = new THREE.Object3D();
+scene.add(player);
+
+// 2. Create the camera and add it to the player object
+const camera = new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,2000);
+player.add(camera); // The camera is now a child of the player
+
+const solidObjects = [];
+
+    /* ────────── Starfield ────────── */
+    const starGeo = new THREE.BufferGeometry();
+    const starVertices = [];
+    for (let i = 0; i < 5000; i++) {
+        const x = (Math.random() - 0.5) * 1500;
+        const y = (Math.random() - 0.5) * 1500;
+        const z = (Math.random() - 0.5) * 1500;
+        if(x*x + y*y + z*z < 100*100) continue;
+        starVertices.push(x, y, z);
+    }
+    starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.7, transparent: true });
+    const stars = new THREE.Points(starGeo, starMat);
+    scene.add(stars);
+
+    /* ────────── Lighting ────────── */
+    const dayColor = new THREE.Color(0x87ceeb);
+    const sunsetColor = new THREE.Color(0xff7f50);
+    const nightColor = new THREE.Color(0x000033);
+    scene.background = dayColor;
+    scene.fog = new THREE.Fog(dayColor, 100, 250);
+    const sun = new THREE.DirectionalLight(0xffffff,1); sun.position.set(100,200,100);
+    scene.add(sun);
+    const ambientLight = new THREE.AmbientLight(0xffffff,0.6);
+    scene.add(ambientLight);
+
+    /* ────────── Terrain mesh with Biomes ────────── */
+    const terrainGeo = new THREE.PlaneGeometry(SIZE,SIZE,RES,RES);
+    terrainGeo.rotateX(-Math.PI/2);
+    const v = terrainGeo.attributes.position;
+    const colors = [];
+    const GRASS_COLOR = new THREE.Color(0x228b22);
+    const ROCK_COLOR = new THREE.Color(0x616161);
+    const SNOW_COLOR = new THREE.Color(0xffffff);
+    const GRASS_ROCK_TRANSITION = 20;
+    const ROCK_LEVEL = 28;
+    const ROCK_SNOW_TRANSITION = 32;
+    const SNOW_LEVEL = 35;
+
+    for(let i=0;i<v.count;i++){
+      const x=v.getX(i), z=v.getZ(i);
+      const y = baseHeight(x,z) + (Math.random()-0.5)*0.2;
+      v.setY(i, y);
+
+      const vertexColor = new THREE.Color();
+      if (y > SNOW_LEVEL) {
+          vertexColor.set(SNOW_COLOR);
+      } else if (y > ROCK_SNOW_TRANSITION) {
+          const t = (y - ROCK_SNOW_TRANSITION) / (SNOW_LEVEL - ROCK_SNOW_TRANSITION);
+          vertexColor.lerpColors(ROCK_COLOR, SNOW_COLOR, t);
+      } else if (y > ROCK_LEVEL) {
+          vertexColor.set(ROCK_COLOR);
+      } else if (y > GRASS_ROCK_TRANSITION) {
+          const t = (y - GRASS_ROCK_TRANSITION) / (ROCK_LEVEL - GRASS_ROCK_TRANSITION);
+          vertexColor.lerpColors(GRASS_COLOR, ROCK_COLOR, t);
+      } else {
+          vertexColor.set(GRASS_COLOR);
+      }
+      colors.push(vertexColor.r, vertexColor.g, vertexColor.b);
+    }
+    terrainGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(colors), 3));
+    terrainGeo.computeVertexNormals();
+    const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ vertexColors: true }));
+    scene.add(terrain);
+
+    /* ────────── Trees ────────── */
+    const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 5, 7);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x66402A });
+    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2E8B57, flatShading: true });
+    const foliageGeo1 = new THREE.ConeGeometry(2.0, 4, 8);
+    const foliageGeo2 = new THREE.ConeGeometry(1.5, 3.5, 8);
+    const foliageGeo3 = new THREE.ConeGeometry(1.0, 3, 8);
+    const TREE_COUNT = 8000;
+
+    const instancedTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, TREE_COUNT);
+    const instancedFoliage1 = new THREE.InstancedMesh(foliageGeo1, foliageMat, TREE_COUNT);
+    const instancedFoliage2 = new THREE.InstancedMesh(foliageGeo2, foliageMat, TREE_COUNT);
+    const instancedFoliage3 = new THREE.InstancedMesh(foliageGeo3, foliageMat, TREE_COUNT);
+    scene.add(instancedTrunks, instancedFoliage1, instancedFoliage2, instancedFoliage3);
+    
+    const FOREST_DENSITY = 0.4;
+    const FOREST_SCALE = 0.005;
+    
+    const treeDummy = new THREE.Object3D();
+    let treeCount = 0;
+    const trunkMatrix = new THREE.Matrix4().setPosition(0, 2.5, 0);
+    const foliage1Matrix = new THREE.Matrix4().setPosition(0, 3.5, 0);
+    const foliage2Matrix = new THREE.Matrix4().setPosition(0, 5.5, 0);
+    const foliage3Matrix = new THREE.Matrix4().setPosition(0, 7.5, 0);
+
+    for(let i=0; i < TREE_COUNT; i++){
+      const x=(Math.random()-0.5)*SIZE, z=(Math.random()-0.5)*SIZE;
+      const density = (simplex.noise2D(x * FOREST_SCALE, z * FOREST_SCALE) + 1) / 2;
+      if (density < FOREST_DENSITY) continue;
+      const y=heightAt(x,z);
+      if(y > GRASS_ROCK_TRANSITION) continue;
+
+      treeDummy.position.set(x,y,z);
+      treeDummy.rotation.y = Math.random() * Math.PI;
+      const s = 0.5 + Math.random() * 1.5;
+      treeDummy.scale.set(s,s,s);
+      treeDummy.updateMatrix();
+
+      instancedTrunks.setMatrixAt(treeCount, new THREE.Matrix4().multiplyMatrices(treeDummy.matrix, trunkMatrix));
+      instancedFoliage1.setMatrixAt(treeCount, new THREE.Matrix4().multiplyMatrices(treeDummy.matrix, foliage1Matrix));
+      instancedFoliage2.setMatrixAt(treeCount, new THREE.Matrix4().multiplyMatrices(treeDummy.matrix, foliage2Matrix));
+      instancedFoliage3.setMatrixAt(treeCount, new THREE.Matrix4().multiplyMatrices(treeDummy.matrix, foliage3Matrix));
+      
+      treeCount++;
+    }
+    instancedTrunks.count = treeCount;
+    instancedFoliage1.count = treeCount;
+    instancedFoliage2.count = treeCount;
+    instancedFoliage3.count = treeCount;
+
+    /* ────────── Rocks ────────── */
+    const rockGeo = new THREE.IcosahedronGeometry(1, 0);
+    const rockMat = new THREE.MeshStandardMaterial({color:0x7f7f7f, flatShading:true});
+    const ROCK_COUNT = 1000;
+    const instancedRocks = new THREE.InstancedMesh(rockGeo, rockMat, ROCK_COUNT);
+    scene.add(instancedRocks);
+
+    const rockDummy = new THREE.Object3D();
+    let rockCount = 0;
+    for(let i=0; i < ROCK_COUNT; i++){
+      const x=(Math.random()-0.5)*SIZE, z=(Math.random()-0.5)*SIZE, y=heightAt(x,z);
+      if(y > SNOW_LEVEL) continue;
+
+      rockDummy.position.set(x,y,z);
+      const s=0.3+Math.random()*1.3;
+      rockDummy.scale.set(s,s,s);
+      rockDummy.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
+      
+      rockDummy.updateMatrix();
+      instancedRocks.setMatrixAt(rockCount, rockDummy.matrix);
+      rockCount++;
+    }
+    instancedRocks.count = rockCount;
+
+    /* ────────── Helper Functions ────────── */
+function createShotgun() {
+    const shotgun = new THREE.Group();
+    const darkGreyMat = new THREE.MeshStandardMaterial({ color: 0x333333, flatShading: true });
+    const brownMat = new THREE.MeshStandardMaterial({ color: 0x4a3a30, flatShading: true });
+
+    // Main body
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, 1.5), darkGreyMat);
+    shotgun.add(body);
+
+    // Barrel
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 2.5), darkGreyMat);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.z = 1.25;
+    body.add(barrel);
+
+    // Stock
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.3, 1.8), brownMat);
+    stock.position.z = -1.5;
+    stock.rotation.x = -0.2;
+    body.add(stock);
+
+    shotgun.name = "shotgun";
+    return shotgun;
+}
+
+
+    function createWatchtower() {
+    const watchtower = new THREE.Group();
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b });
+    const darkWoodMat = new THREE.MeshStandardMaterial({ color: 0x5c3a1a });
+
+    // Platform
+    const platform = new THREE.Mesh(new THREE.BoxGeometry(6, 0.5, 6), woodMat);
+    platform.name = "watchtower_platform";
+    platform.position.y = 10;
+    watchtower.add(platform);
+
+    // Legs
+    const legGeo = new THREE.BoxGeometry(0.5, 10, 0.5);
+    for (let i = 0; i < 4; i++) {
+        const leg = new THREE.Mesh(legGeo, darkWoodMat);
+        const x = (i % 2 === 0 ? 1 : -1) * 2.5;
+        const z = (i < 2 ? 1 : -1) * 2.5;
+        leg.position.set(x, 5, z);
+        watchtower.add(leg);
+    }
+    
+    // Ladder
+    const ladder = new THREE.Group();
+    const railGeo = new THREE.BoxGeometry(0.2, 10, 0.2);
+    const rungGeo = new THREE.BoxGeometry(1, 0.2, 0.2);
+    
+    const railL = new THREE.Mesh(railGeo, darkWoodMat);
+    railL.position.x = -0.5;
+    const railR = new THREE.Mesh(railGeo, darkWoodMat);
+    railR.position.x = 0.5;
+    ladder.add(railL, railR);
+
+    for (let i = 0; i < 10; i++) {
+        const rung = new THREE.Mesh(rungGeo, darkWoodMat);
+        rung.position.y = (i * 1) - 4.5;
+        ladder.add(rung);
+    }
+    ladder.position.set(0, 5, 3.2);
+    watchtower.add(ladder);
+
+    // --- IMPORTANT: Invisible climbing trigger zone ---
+    const climbableZoneGeo = new THREE.BoxGeometry(2, 11, 2);
+    const climbableZoneMat = new THREE.MeshBasicMaterial({ visible: false });
+    const climbableZone = new THREE.Mesh(climbableZoneGeo, climbableZoneMat);
+    climbableZone.name = "climbable_ladder"; // We use this name to find it later
+    climbableZone.position.set(0, 5, 3.2);
+    watchtower.add(climbableZone);
+
+	// Invisible wall for the back of the ladder to make it solid
+	const blockerWallGeo = new THREE.BoxGeometry(1.5, 10, 0.5);
+	const blockerWallMat = new THREE.MeshBasicMaterial({ visible: false });
+	const blockerWall = new THREE.Mesh(blockerWallGeo, blockerWallMat);
+	blockerWall.name = "collision_wall"; // Give it a name to find it later
+	blockerWall.position.set(0, 5, 2.5); // Position it behind the ladder
+	watchtower.add(blockerWall);
+    return watchtower;
+}
+
+    function createGrassClump() {
+        const clump = new THREE.Group();
+        const bladeGeo = new THREE.BoxGeometry(0.1, 1.5, 0.1);
+        const bladeMat = new THREE.MeshStandardMaterial({ color: 0x1f6d1f, flatShading: true });
+
+        const bladeCount = 8;
+        for (let i = 0; i < bladeCount; i++) {
+            const blade = new THREE.Mesh(bladeGeo, bladeMat);
+            blade.position.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
+            blade.rotation.x = (Math.random() - 0.5) * 0.4;
+            blade.rotation.z = (Math.random() - 0.5) * 0.4;
+            blade.scale.y = 0.5 + Math.random() * 0.8;
+            clump.add(blade);
+        }
+        return clump;
+    }
+
+    function createStickMonument() {
+        const monument = new THREE.Group();
+        const stickMat = new THREE.MeshStandardMaterial({color: 0x503a2a, flatShading: true});
+        const mainStick = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 2.5), stickMat);
+        const crossStick = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 2), stickMat);
+        crossStick.rotation.z = Math.PI / 2;
+        mainStick.add(crossStick);
+        monument.add(mainStick);
+        monument.name = "monument";
+        return monument;
+    }
+
+    /* ────────── Procedural Grass ────────── */
+    const grassClumpBlueprint = createGrassClump();
+    const geometriesToMerge = [];
+    grassClumpBlueprint.traverse(child => {
+        if (child.isMesh) {
+            const transformedGeo = child.geometry.clone();
+            transformedGeo.applyMatrix4(child.matrix);
+            geometriesToMerge.push(transformedGeo);
+        }
+    });
+    const mergedGrassGeo = BufferGeometryUtils.mergeGeometries(geometriesToMerge, false);
+    const grassMat = new THREE.MeshStandardMaterial({ color: 0x1f6d1f, side: THREE.DoubleSide });
+    const GRASS_COUNT = 75000;
+    const instancedGrass = new THREE.InstancedMesh(mergedGrassGeo, grassMat, GRASS_COUNT);
+    scene.add(instancedGrass);
+
+    const grassDummy = new THREE.Object3D();
+    let grassCount = 0;
+    for(let i=0; i < GRASS_COUNT; i++){
+        const x = (Math.random() - 0.5) * SIZE;
+        const z = (Math.random() - 0.5) * SIZE;
+        const y = heightAt(x, z);
+        if(y > GRASS_ROCK_TRANSITION - 2) continue;
+        grassDummy.position.set(x, y, z);
+        grassDummy.rotation.y = Math.random() * Math.PI;
+        const s = 0.5 + Math.random() * 0.75;
+        grassDummy.scale.set(s,s,s);
+        grassDummy.updateMatrix();
+        instancedGrass.setMatrixAt(grassCount, grassDummy.matrix);
+        grassCount++;
+    }
+    instancedGrass.count = grassCount;
+
+/*--------------------shoot---------*/
+function shoot() {
+    if (!canShoot || isGameOver) return;
+
+    canShoot = false;
+    isShooting = true;
+    recoilTime = 0;
+
+    // Set a cooldown timer
+    setTimeout(() => { canShoot = true; }, SHOT_COOLDOWN * 1000);
+
+    // Use a raycaster to detect hits
+    const hitRaycaster = new THREE.Raycaster();
+    hitRaycaster.setFromCamera({ x: 0, y: 0 }, camera);
+    
+    // Check if the ray intersects with the enemy's body parts
+    const intersects = hitRaycaster.intersectObjects(enemy.children, true);
+
+    if (intersects.length > 0) {
+        // We hit the enemy! Stun it.
+        enemyState = AI_STATE.STUNNED;
+        stunTimer = STUN_DURATION;
+        console.log("Enemy hit!");
+    }
+}
+
+
+/* ────────── Watchtower ────────── */
+const watchtower = createWatchtower();
+let attempts = 0;
+while(attempts < 100) { // Try 100 times to find a flat spot
+    const x = (Math.random() - 0.5) * (SIZE * 0.7);
+    const z = (Math.random() - 0.5) * (SIZE * 0.7);
+    
+    // Check heights at the four corners of the tower's base
+    const h1 = heightAt(x - 3, z - 3);
+    const h2 = heightAt(x + 3, z - 3);
+    const h3 = heightAt(x - 3, z + 3);
+    const h4 = heightAt(x + 3, z + 3);
+    const minH = Math.min(h1, h2, h3, h4);
+    const maxH = Math.max(h1, h2, h3, h4);
+
+if (maxH - minH < 2) { // If ground is flat enough
+    // Calculate the average height for a more stable placement
+    const avgH = (h1 + h2 + h3 + h4) / 4;
+    watchtower.position.set(x, avgH, z);
+    
+    scene.add(watchtower);
+    break; // Found a spot, exit loop
+}
+    attempts++;
+}
+const platformMesh = watchtower.getObjectByName("watchtower_platform");
+if (platformMesh) {
+    solidObjects.push(platformMesh);
+}
+const blockerWallMesh = watchtower.getObjectByName("collision_wall");
+if (blockerWallMesh) {
+    solidObjects.push(blockerWallMesh);
+}
+
+/* ────────── Shotgun ────────── */
+// 1. The shotgun that exists in the world on the watchtower
+const worldShotgun = createShotgun();
+// Position it on top of the watchtower platform
+worldShotgun.position.copy(watchtower.position);
+worldShotgun.position.y += 10.5; // Platform is at y=10, so this is just above it
+worldShotgun.rotation.y = Math.PI / 2.5;
+scene.add(worldShotgun);
+
+// 2. The shotgun the player holds (view model)
+const viewModelShotgun = createShotgun();
+viewModelShotgun.position.set(0.6, -0.4, -1.2);
+viewModelShotgun.rotation.set(0.1, Math.PI - 0.1, 0);
+viewModelShotgun.renderOrder = 999; // Force this object to be rendered last
+
+// --- DEFINITIVE FIX FOR VIEW MODEL VISIBILITY ---
+// Traverse the model and set its material to ignore the depth buffer.
+viewModelShotgun.traverse(child => {
+    if (child.isMesh) {
+        child.material.depthTest = false;
+        child.material.depthWrite = false;
+    }
+});
+
+viewModelShotgun.visible = false;
+camera.add(viewModelShotgun);
+
+    /* ────────── Objective Monuments ────────── */
+    let monuments = [];
+    const NUM_MONUMENTS = 5;
+    for (let i = 0; i < NUM_MONUMENTS; i++) {
+        const monument = createStickMonument();
+        const x = (Math.random() - 0.5) * (SIZE * 0.8);
+        const z = (Math.random() - 0.5) * (SIZE * 0.8);
+        const y = heightAt(x, z);
+        monument.position.set(x, y + 1.25, z);
+        monument.rotation.y = Math.random() * Math.PI;
+        scene.add(monument);
+        monuments.push(monument);
+    }
+
+    /* ────────── Wendigo Model ────────── */
+    const enemy = new THREE.Group();
+    scene.add(enemy);
+    const wendigoBodyMat = new THREE.MeshStandardMaterial({color:0x9c8b80, flatShading: true});
+    const wendigoAntlerMat = new THREE.MeshStandardMaterial({color:0x4a3a30, flatShading: true});
+const wendigoEyeMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(1, 6, 1), wendigoBodyMat);
+    torso.position.y = 3;
+    enemy.add(torso);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 1.5), wendigoBodyMat);
+    head.position.y = 6.6;
+    enemy.add(head);
+    const eyeGeo = new THREE.SphereGeometry(0.1, 6, 6);
+    const eyeL = new THREE.Mesh(eyeGeo, wendigoEyeMat);
+    eyeL.position.set(-0.25, 6.8, 0.7);
+    const eyeR = new THREE.Mesh(eyeGeo, wendigoEyeMat);
+    eyeR.position.set(0.25, 6.8, 0.7);
+    enemy.add(eyeL, eyeR);
+    const antlerBranchGeo = new THREE.CylinderGeometry(0.1, 0.1, 2, 5);
+    function createAntler() {
+        const antler = new THREE.Group();
+        const main = new THREE.Mesh(antlerBranchGeo, wendigoAntlerMat);
+        main.rotation.z = -Math.PI / 4;
+        main.position.y = 1;
+        antler.add(main);
+        const branch1 = new THREE.Mesh(antlerBranchGeo, wendigoAntlerMat);
+        branch1.scale.set(0.7, 0.7, 0.7);
+        branch1.position.set(0, 1.2, 0);
+        branch1.rotation.z = Math.PI / 6;
+        main.add(branch1);
+        const branch2 = new THREE.Mesh(antlerBranchGeo, wendigoAntlerMat);
+        branch2.scale.set(0.5, 0.5, 0.5);
+        branch2.position.set(0, 0.5, 0);
+        branch2.rotation.z = Math.PI / 3;
+        main.add(branch2);
+        return antler;
+    }
+    const antlerL = createAntler();
+    antlerL.position.set(-0.4, 7.2, 0.2);
+    antlerL.rotation.y = -Math.PI / 12;
+    enemy.add(antlerL);
+    const antlerR = createAntler();
+    antlerR.scale.x = -1;
+    antlerR.position.set(0.4, 7.2, 0.2);
+    antlerR.rotation.y = Math.PI / 12;
+    enemy.add(antlerR);
+    const ex=50, ez=-50;
+    enemy.position.set(ex,heightAt(ex,ez),ez);
+
+
+
+    /* ────────── Input setup with Pointer Lock ────────── */
+    let keys={}; let yaw=0,pitch=0; const SENS=0.002;
+
+    document.addEventListener('mousemove', e => {
+        if (document.pointerLockElement === renderer.domElement) {
+            yaw -= e.movementX * SENS;
+            pitch -= e.movementY * SENS;
+            pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+        }
+    });
+    addEventListener('keydown',e=>keys[e.code]=true);
+    addEventListener('keyup',e=>keys[e.code]=false);
+    
+    document.getElementById('restartButton').addEventListener('click', () => location.reload());
+    document.getElementById('restartButtonWin').addEventListener('click', () => location.reload());
+
+    // --- MAIN CLICK HANDLER for Pointer Lock, Shooting, and Monuments ---
+    renderer.domElement.addEventListener('click', () => {
+        // 1. If pointer is not locked, request it and do nothing else.
+        if (!document.pointerLockElement) {
+            if (!isGameOver) {
+                renderer.domElement.requestPointerLock();
+            }
+            return;
+        }
+
+        // From here, we know the pointer is locked and the game is active.
+
+        // 2. If player has the shotgun, attempt to shoot.
+        if (hasShotgun) {
+            shoot();
+        }
+
+        // 3. Check for monument interaction.
+        const interactionRay = new THREE.Raycaster();
+        interactionRay.setFromCamera({x:0, y:0}, camera);
+        
+        const intersects = interactionRay.intersectObjects(monuments, true);
+        
+        if (intersects.length > 0 && intersects[0].distance < INTERACT_DISTANCE) {
+            let monument = intersects[0].object;
+            while (monument.parent && monument.name !== 'monument') {
+                monument = monument.parent;
+            }
+
+            if(monument.name === 'monument') {
+                // --- Monument Explosion Logic ---
+                const piecesToExplode = [];
+                monument.traverse(child => {
+                    if (child.isMesh) {
+                        piecesToExplode.push(child);
+                    }
+                });
+
+                piecesToExplode.forEach(piece => {
+                    const worldPos = new THREE.Vector3();
+                    piece.getWorldPosition(worldPos);
+                    scene.add(piece);
+                    piece.position.copy(worldPos);
+                    explodingPieces.push({
+                        mesh: piece,
+                        velocity: new THREE.Vector3((Math.random()-0.5)*8, Math.random()*10, (Math.random()-0.5)*8),
+                        rotation: new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5)),
+                        lifetime: 2 + Math.random() * 1.5
+                    });
+                });
+
+                scene.remove(monument);
+                monuments = monuments.filter(m => m !== monument);
+                
+                enemyState = AI_STATE.ENRAGED;
+                sprintTarget.copy(player.position);
+
+                if (monuments.length === 0) {
+                    isGameOver = true;
+                    document.getElementById('winScreen').style.display = 'flex';
+                    document.exitPointerLock();
+                }
+            }
+        }
+    });
+
+
+    /* ────────── Physics & AI constants ────────── */
+    const SPEED=12, GRAV=15, JUMP=8, EYE=2;
+    const LADDER_SPEED = 5;
+    const SPRINT_MULTIPLIER = 1.5;
+    const MAX_STAMINA = 100;
+    const STAMINA_DRAIN_RATE = 25;
+    const STAMINA_REGEN_RATE = 15;
+    const ENEMY_CHASE_SPEED = 7.5;
+    const ENEMY_SEARCH_SPEED = 4;
+    const ENEMY_PATROL_SPEED = 1.5;
+    const ENEMY_ENRAGED_SPEED = 18;
+    const ENEMY_STOP  = 4;
+    const SPRINT_STOP_DISTANCE = 10;
+    const SIGHT_RANGE = 150;
+    const PATROL_RADIUS = 60;
+    const INTERACT_DISTANCE = 10;
+    const DAY_CYCLE_SECONDS = 120;
+    const SHOT_COOLDOWN = 1.5; // seconds
+    const STUN_DURATION = 3; // seconds
+    const RECOIL_DURATION = 0.15;
+    const RECOIL_DISTANCE = 0.5;
+    const RECOIL_ROTATION = 0.1;
+    let timeOfDay = 0;
+    let vY=0, grounded=false; let prev=performance.now();
+    // The player's origin is now the CENTER of their body, EYE/2 units above the ground.
+    player.position.set(0, heightAt(0, 0) + 2 + EYE / 2, 0);
+
+    // The camera is at the top of the body, relative to the player's center.
+    camera.position.y = EYE / 2;
+    const hud=document.getElementById('coords');
+    const staminaBar=document.getElementById('staminaBar');
+
+    /* ────────── Game State & AI Variables ────────── */
+    const AI_STATE = { PATROLLING: 'patrolling', CHASING: 'chasing', SEARCHING: 'searching', ENRAGED: 'enraged', STUNNED: 'stunned' };
+    let enemyState = AI_STATE.PATROLLING;
+    let canSeePlayer = false;
+    let isGameOver = false;
+    let stunTimer = 0;
+    let isShooting = false;
+    let canShoot = true;
+    let recoilTime = 0;
+    const shotgunDefaultPos = new THREE.Vector3(0.6, -0.4, -1.2);
+    const shotgunDefaultRot = new THREE.Euler(0.1, Math.PI - 0.1, 0);
+
+    let stamina = MAX_STAMINA;
+    const lastKnownPosition = new THREE.Vector3();
+    const patrolTarget = new THREE.Vector3();
+    const sprintTarget = new THREE.Vector3();
+    let searchTimer = 0;
+    const raycaster = new THREE.Raycaster();
+    const downwardRaycaster = new THREE.Raycaster();
+    const playerDirection = new THREE.Vector3();
+    const raycastOrigin = new THREE.Vector3();
+    const debugArrow = new THREE.ArrowHelper(new THREE.Vector3(0,-1,0), new THREE.Vector3(), 5, 0xff0000);
+    scene.add(debugArrow);
+    let hasShotgun = false;
+    let explodingPieces = [];
+
+    function setNewPatrolTarget() {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.random() * PATROL_RADIUS;
+      patrolTarget.set(
+          enemy.position.x + Math.cos(angle) * radius,
+          enemy.position.y,
+          enemy.position.z + Math.sin(angle) * radius
+      );
+    }
+    setNewPatrolTarget();
+    
+    // DELETE THE OLD MONUMENT INTERACTION LISTENER. It is now part of the main click handler.
+    /* ────────── Player Interaction ────────── */
+    // (This entire section should be empty or deleted)
+
+    /* ────────── Main loop ────────── */
+// DELETE your old animate() function and REPLACE it with this entire new one.
+
+function animate(){
+  if (isGameOver) return;
+
+  requestAnimationFrame(animate);
+  const now=performance.now(), dt=(now-prev)/1000; prev=now;
+
+  // 1. Handle Player Orientation
+  player.rotation.y = yaw;
+  camera.rotation.x = pitch;
+
+  // 2. Calculate horizontal movement vector from input
+  const isSprinting = keys['ShiftLeft'] && stamina > 0;
+  let currentSpeed = SPEED;
+  if (isSprinting) {
+      currentSpeed = SPEED * SPRINT_MULTIPLIER;
+      stamina -= STAMINA_DRAIN_RATE * dt;
+  } else if (stamina < MAX_STAMINA) {
+      stamina += STAMINA_REGEN_RATE * dt;
+  }
+  stamina = Math.max(0, Math.min(MAX_STAMINA, stamina));
+
+  const forward = new THREE.Vector3();
+  player.getWorldDirection(forward);
+  forward.negate();
+  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+  let move = new THREE.Vector3();
+  if(keys['KeyW']) move.add(forward);
+  if(keys['KeyS']) move.sub(forward);
+  if(keys['KeyD']) move.add(right);
+  if(keys['KeyA']) move.sub(right);
+  if(move.lengthSq()>0) move.normalize().multiplyScalar(currentSpeed * dt);
+
+// --- NEW "SAFETY NET" PLAYER PHYSICS ENGINE ---
+
+// 1. Handle Jumping
+// We check for jumping first, based on whether we were grounded on the *last* frame.
+if (keys['Space'] && grounded) {
+    vY = JUMP;
+}
+
+// 2. Apply horizontal movement (with collision against solid objects)
+if (move.lengthSq() > 0) {
+const playerCollider = new THREE.Box3().setFromCenterAndSize(
+    player.position, 
+    new THREE.Vector3(0.5, EYE / 2, 0.5) // A shorter box that won't clip the floor
+);
+    const futureColliderX = playerCollider.clone().translate(new THREE.Vector3(move.x, 0, 0));
+    for (const obj of solidObjects) {
+        if (futureColliderX.intersectsBox(new THREE.Box3().setFromObject(obj))) {
+            move.x = 0; break;
+        }
+    }
+    const futureColliderZ = playerCollider.clone().translate(new THREE.Vector3(0, 0, move.z));
+    for (const obj of solidObjects) {
+        if (futureColliderZ.intersectsBox(new THREE.Box3().setFromObject(obj))) {
+            move.z = 0; break;
+        }
+    }
+}
+player.position.add(move);
+
+// 3. Apply gravity
+vY -= GRAV * dt;
+player.position.y += vY * dt;
+
+// 4. Collision Correction (The "Safety Net")
+// Find the highest solid ground directly beneath the player
+let groundY = heightAt(player.position.x, player.position.z);
+for (const obj of solidObjects) {
+    const objBoundingBox = new THREE.Box3().setFromObject(obj);
+    // Check if the player is within the object's XZ footprint
+    if (player.position.x >= objBoundingBox.min.x && player.position.x <= objBoundingBox.max.x &&
+        player.position.z >= objBoundingBox.min.z && player.position.z <= objBoundingBox.max.z) {
+            
+        // --- THIS IS THE CRUCIAL NEW CHECK ---
+        // Only consider it "ground" if its top surface is below the player's center.
+        // This prevents ceilings from being treated as floors.
+        if (objBoundingBox.max.y < player.position.y) {
+             groundY = Math.max(groundY, objBoundingBox.max.y);
+        }
+    }
+}
+
+const playerFeetY = player.position.y - (EYE / 2);
+if (playerFeetY < groundY) {
+    // Player has clipped through the ground, snap them back up.
+    vY = 0;
+    player.position.y = groundY + (EYE / 2);
+    grounded = true;
+} else {
+    grounded = false;
+}
+
+// 5. Ladder Logic (Overrides other physics)
+const ladderTrigger = watchtower.getObjectByName('climbable_ladder');
+if (ladderTrigger) {
+    const playerAABB = new THREE.Box3().setFromCenterAndSize(player.position, new THREE.Vector3(1, EYE, 1));
+    if (new THREE.Box3().setFromObject(ladderTrigger).intersectsBox(playerAABB)) {
+        vY = 0;
+        grounded = true; 
+        if (keys['KeyW']) player.position.y += LADDER_SPEED * dt;
+        if (keys['KeyS']) player.position.y -= LADDER_SPEED * dt;
+    }
+}
+  // Animate exploding pieces
+  for (let i = explodingPieces.length - 1; i >= 0; i--) {
+      const piece = explodingPieces[i];
+      piece.velocity.y -= GRAV * dt;
+      const displacement = piece.velocity.clone().multiplyScalar(dt);
+      piece.mesh.position.x += displacement.x;
+      piece.mesh.position.y += displacement.y;
+      piece.mesh.position.z += displacement.z;
+      piece.mesh.rotation.x += piece.rotation.x * dt;
+      piece.mesh.rotation.y += piece.rotation.y * dt;
+      piece.mesh.rotation.z += piece.rotation.z * dt;
+      piece.lifetime -= dt;
+      if (piece.lifetime <= 0) {
+          scene.remove(piece.mesh);
+          explodingPieces.splice(i, 1);
+      }
+  }
+
+
+if (isShooting) {
+    recoilTime += dt;
+    const progress = Math.min(recoilTime / RECOIL_DURATION, 1.0);
+    
+    // Use a sine curve for a smooth "kick back and return" motion
+    const recoilAmount = Math.sin(progress * Math.PI);
+
+    // Apply recoil
+    viewModelShotgun.position.z = shotgunDefaultPos.z + recoilAmount * RECOIL_DISTANCE;
+    viewModelShotgun.rotation.x = shotgunDefaultRot.x - recoilAmount * RECOIL_ROTATION;
+    
+    // Check if animation is finished
+    if (progress >= 1.0) {
+        isShooting = false;
+        // Reset to default to avoid floating point drift
+        viewModelShotgun.position.copy(shotgunDefaultPos);
+        viewModelShotgun.rotation.copy(shotgunDefaultRot);
+    }
+}
+
+
+  // UPDATE AI SENSES (but not when enraged)
+  if (enemyState !== AI_STATE.ENRAGED) {
+    const playerTorsoPos = player.position.clone().add(new THREE.Vector3(0, EYE, 0));
+    const distToPlayer = playerTorsoPos.distanceTo(enemy.position);
+    canSeePlayer = false;
+    if (distToPlayer <= SIGHT_RANGE) {
+      const enemyHeadPos = enemy.position.clone().add(new THREE.Vector3(0, 7, 0));
+      playerDirection.subVectors(playerTorsoPos, enemyHeadPos).normalize();
+      raycaster.set(enemyHeadPos, playerDirection);
+      const obstacles = [terrain, instancedTrunks, instancedFoliage1, instancedFoliage2, instancedFoliage3, instancedRocks, instancedGrass, watchtower];
+      const intersects = raycaster.intersectObjects(obstacles, true);
+      if (intersects.length === 0 || intersects[0].distance > distToPlayer) {
+        canSeePlayer = true;
+      }
+    }
+  }
+  
+  // UPDATE AI STATE MACHINE
+  switch(enemyState) {
+   case AI_STATE.STUNNED:
+        stunTimer -= dt;
+        // Do nothing, just wait for the timer to run out
+        if (stunTimer <= 0) {
+            // After being stunned, the enemy becomes enraged and chases
+            enemyState = AI_STATE.CHASING;
+        }
+        break;
+
+    case AI_STATE.ENRAGED:
+      const distToSprintTarget = enemy.position.distanceTo(sprintTarget);
+      if (distToSprintTarget > SPRINT_STOP_DISTANCE) {
+        const sprintDirection = new THREE.Vector3().subVectors(sprintTarget, enemy.position).normalize();
+        enemy.lookAt(sprintTarget.x, enemy.position.y, sprintTarget.z);
+        enemy.position.add(sprintDirection.multiplyScalar(ENEMY_ENRAGED_SPEED * dt));
+        enemy.position.y = heightAt(enemy.position.x, enemy.position.z);
+      } else {
+        enemyState = AI_STATE.SEARCHING;
+        lastKnownPosition.copy(sprintTarget);
+        searchTimer = 10;
+      }
+      break;
+    
+    case AI_STATE.PATROLLING:
+      if(canSeePlayer) {
+        enemyState = AI_STATE.CHASING;
+      } else {
+        const distToTarget = enemy.position.distanceTo(patrolTarget);
+        if(distToTarget < 5) {
+          setNewPatrolTarget();
+        } else {
+          const patrolDirection = new THREE.Vector3().subVectors(patrolTarget, enemy.position).normalize();
+          enemy.lookAt(patrolTarget.x, enemy.position.y, patrolTarget.z);
+          enemy.position.add(patrolDirection.multiplyScalar(ENEMY_PATROL_SPEED * dt));
+          enemy.position.y = heightAt(enemy.position.x, enemy.position.z);
+        }
+      }
+      break;
+
+    case AI_STATE.CHASING:
+      if(canSeePlayer) {
+        lastKnownPosition.copy(player.position);
+        const dist = player.position.distanceTo(enemy.position);
+        enemy.lookAt(player.position.x, enemy.position.y, player.position.z);
+        if(dist > ENEMY_STOP) {
+          const moveDirection = playerDirection.clone().setY(0).normalize();
+          enemy.position.add(moveDirection.multiplyScalar(ENEMY_CHASE_SPEED * dt));
+          enemy.position.y = heightAt(enemy.position.x, enemy.position.z);
+        } else {
+          isGameOver = true;
+          document.getElementById('gameOverScreen').style.display = 'flex';
+          document.exitPointerLock();
+        }
+      } else {
+        enemyState = AI_STATE.SEARCHING;
+        searchTimer = 5;
+      }
+      break;
+
+    case AI_STATE.SEARCHING:
+      if(canSeePlayer) {
+        enemyState = AI_STATE.CHASING;
+      } else {
+        const distToLast = enemy.position.distanceTo(lastKnownPosition);
+        if(distToLast > 2) {
+          const searchDirection = new THREE.Vector3().subVectors(lastKnownPosition, enemy.position).normalize();
+          enemy.lookAt(lastKnownPosition.x, enemy.position.y, lastKnownPosition.z);
+          enemy.position.add(searchDirection.multiplyScalar(ENEMY_SEARCH_SPEED * dt));
+          enemy.position.y = heightAt(enemy.position.x, enemy.position.z);
+        } else {
+          searchTimer -= dt;
+          if (searchTimer <= 0) {
+            enemyState = AI_STATE.PATROLLING;
+            setNewPatrolTarget();
+          }
+        }
+      }
+      break;
+  }
+
+  // UI Updates
+  staminaBar.style.width = `${stamina}%`;
+  const playerPos = `Player: X ${player.position.x.toFixed(0)}, Y ${player.position.y.toFixed(0)}, Z ${player.position.z.toFixed(0)}`;
+  const objective = `Monuments Left: ${monuments.length} | AI State: ${enemyState}`;
+  const monumentCoords = monuments.map((m, i) => `M${i+1}: X ${m.position.x.toFixed(0)}, Z ${m.position.z.toFixed(0)}`).join(' | ');
+  hud.innerHTML = `${playerPos}<br>${objective}<br>${monumentCoords}<br>${watchtower && watchtower.parent ? `Watchtower: X ${watchtower.position.x.toFixed(0)}, Z ${watchtower.position.z.toFixed(0)}` : 'Watchtower: Not Spawned'}`;
+
+  // Item Pickup Logic
+  if (keys['KeyE'] && !hasShotgun) {
+      const distanceToShotgun = player.position.distanceTo(worldShotgun.position);
+      if (distanceToShotgun < 3) {
+          hasShotgun = true;
+          worldShotgun.visible = false;
+          viewModelShotgun.visible = true;
+      }
+  }
+
+  // DYNAMIC SKY UPDATE
+  timeOfDay += (Math.PI * 2 / DAY_CYCLE_SECONDS) * dt;
+  const sunAngle = timeOfDay;
+  const sunY = Math.sin(sunAngle);
+  const isDay = sunY > 0;
+  sun.position.set(Math.cos(sunAngle) * 400, sunY * 400, 100);
+  sun.intensity = Math.max(0, sunY) * 1.2 + 0.1;
+  ambientLight.intensity = 0.2 + Math.max(0, sunY) * 0.5;
+  stars.visible = true;
+  starMat.opacity = Math.max(0, -sunY * 2 - 0.2);
+  const blendFactor = Math.abs(sunY);
+  if(isDay){
+    scene.background.lerpColors(sunsetColor, dayColor, blendFactor);
+  } else {
+    scene.background.lerpColors(sunsetColor, nightColor, blendFactor);
+  }
+  scene.fog.color.copy(scene.background);
+
+  renderer.render(scene,camera);
+}
+    animate();
+
+    /* ────────── Resize handler ────────── */
+    addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight); camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();});
+  </script>
+</body>
+</html>
